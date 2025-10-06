@@ -39,10 +39,10 @@ def _fetch_page(
     while retries < max_retries:
         try:
             response = session.get(url, params=params, timeout=30)
-            
+
             # If rate limited, wait and retry
             if response.status_code == 429:
-                wait_time = int(response.headers.get("Retry-After", 2 ** retries))
+                wait_time = int(response.headers.get("Retry-After", 60))
                 logger.warning(
                     f"Rate limit hit for {url} with params {params}. "
                     f"Waiting {wait_time} seconds before retry {retries + 1}/{max_retries}."
@@ -53,6 +53,23 @@ def _fetch_page(
 
             response.raise_for_status()
             return response.json()
+
+        except requests_lib.exceptions.HTTPError as e:
+            # Handle 429 specifically
+            if e.response.status_code == 429:
+                wait_time = int(e.response.headers.get("Retry-After", 60))
+                logger.warning(
+                    f"Rate limit hit (caught in exception) for {url} with params {params}. "
+                    f"Waiting {wait_time} seconds before retry {retries + 1}/{max_retries}."
+                )
+                time.sleep(wait_time)
+                retries += 1
+                if retries >= max_retries:
+                    raise
+                continue
+            else:
+                # For other HTTP errors, raise immediately
+                raise
 
         except requests_lib.exceptions.RequestException as e:
             logger.error(f"Request failed for {url} with params {params}: {e}")
@@ -84,20 +101,25 @@ def _paginated_get(
     """
     params["limit"] = 500
     start = 0
-    
+
     # Use a session for connection pooling
     with requests.Session() as session:
         session.headers.update(headers)
-        
+
         # Use a thread pool to fetch pages in parallel
-        # Concurrency of 3 to stay within typical Pipedrive rate limits
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        # Concurrency of 2 to stay within typical Pipedrive rate limits
+        with ThreadPoolExecutor(max_workers=2) as executor:
             more_items = True
             while more_items:
-                futures = {
-                    executor.submit(_fetch_page, session, url, {**params, "start": start + (i * params["limit"])})
-                    for i in range(executor._max_workers)
-                }
+                futures = []
+                for i in range(executor._max_workers):
+                    # Add small delay between submitting concurrent requests
+                    if i > 0:
+                        time.sleep(0.5)
+                    futures.append(
+                        executor.submit(_fetch_page, session, url, {**params, "start": start + (i * params["limit"])})
+                    )
+                futures = set(futures)
                 
                 pages_in_batch = 0
                 for future in as_completed(futures):
