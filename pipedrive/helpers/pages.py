@@ -15,6 +15,7 @@ import time
 import dlt
 from dlt.sources.helpers import requests
 from requests import Session
+import requests as requests_lib  # Import standard requests for exceptions
 
 from .custom_fields_munger import rename_fields
 from ..typing import TDataPage
@@ -53,7 +54,7 @@ def _fetch_page(
             response.raise_for_status()
             return response.json()
 
-        except requests.exceptions.RequestException as e:
+        except requests_lib.exceptions.RequestException as e:
             logger.error(f"Request failed for {url} with params {params}: {e}")
             retries += 1
             if retries >= max_retries:
@@ -89,8 +90,8 @@ def _paginated_get(
         session.headers.update(headers)
         
         # Use a thread pool to fetch pages in parallel
-        # Concurrency of 10 to stay within typical Pipedrive rate limits
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        # Concurrency of 3 to stay within typical Pipedrive rate limits
+        with ThreadPoolExecutor(max_workers=3) as executor:
             more_items = True
             while more_items:
                 futures = {
